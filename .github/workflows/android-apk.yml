@@ -1,0 +1,66 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android platform scaffold
+        shell: bash
+        run: |
+          mkdir -p /tmp/routine-scaffold
+          flutter create --platforms=android --org com.routineapp --project-name routine /tmp/routine-scaffold
+          cp -a /tmp/routine-scaffold/android/. android/
+          mkdir -p android/app/src/main
+          cp android/app/src/main/AndroidManifest.xml /tmp/generated-manifest.xml
+          # Restore the app-specific manifest tracked in this repository.
+          git show HEAD:android/app/src/main/AndroidManifest.xml > /tmp/routine-manifest.xml
+          cp /tmp/routine-manifest.xml android/app/src/main/AndroidManifest.xml
+
+      - name: Configure notification desugaring
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/build.gradle.kts")
+          if p.exists():
+              s = p.read_text()
+              if "isCoreLibraryDesugaringEnabled = true" not in s:
+                  s = s.replace("compileOptions {", "compileOptions {\n        isCoreLibraryDesugaringEnabled = true")
+              if "coreLibraryDesugaring(" not in s:
+                  s += '\ndependencies {\n    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.1.4\")\n}\n'
+              p.write_text(s)
+          else:
+              p = Path("android/app/build.gradle")
+              s = p.read_text()
+              if "coreLibraryDesugaringEnabled true" not in s:
+                  s = s.replace("compileOptions {", "compileOptions {\n        coreLibraryDesugaringEnabled true")
+              if "coreLibraryDesugaring " not in s:
+                  s += "\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'\n}\n"
+              p.write_text(s)
+          PY
+
+      - name: Resolve packages
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: routine-android-release
+          path: build/app/outputs/flutter-apk/app-release.apk
